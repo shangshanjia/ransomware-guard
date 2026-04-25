@@ -3,6 +3,9 @@ import numpy as np
 import time
 import os
 import psutil
+import warnings  # 新增：导入警告控制模块
+
+warnings.filterwarnings("ignore", category=UserWarning)
 
 class RansomwareEngine:
     def __init__(self, model_path="../../models/rf_ransomware_model.joblib"):
@@ -67,25 +70,29 @@ class RansomwareEngine:
 
     def kill_process(self, pid, process_name):
         """
-        真实的进程猎杀机制
+        真实的进程猎杀机制 (对齐论文 4.2 节：调用 TerminateProcess)
         """
+        import win32api
+        import win32con
         print(f"[🛡️ 主动防御] 正在切断 {process_name} 的 I/O 句柄并尝试终止进程...")
         if pid == 9999:
             print("[-] 警告: 未能反查到真实 PID，进程可能已退出或隐藏。")
             return
             
         try:
-            # 获取真实的进程对象
-            p = psutil.Process(pid)
-            # 执行强制终止
-            p.kill()
-            print(f"[+] 猎杀成功！恶意进程 {process_name} (PID: {pid}) 已被彻底从内存中清除。系统安全。\n")
-        except psutil.NoSuchProcess:
-            print(f"[-] 猎杀失效: 进程 (PID: {pid}) 已经不存在。")
-        except psutil.AccessDenied:
-            print(f"[-] 猎杀被拒绝: 权限不足！请确保以【管理员身份】运行本系统！")
+            # 使用 Windows 底层 API 提权并获取进程句柄 (对应论文中的 0x000F0000 也就是 PROCESS_TERMINATE)
+            handle = win32api.OpenProcess(win32con.PROCESS_TERMINATE, False, pid)
+            # 强制猎杀进程
+            win32api.TerminateProcess(handle, 0)
+            print(f"[+] 猎杀成功！恶意进程 {process_name} (PID: {pid}) 已被 TerminateProcess 彻底切断。\n")
         except Exception as e:
-            print(f"[-] 猎杀发生未知错误: {e}")
+            # 如果底层 API 失败，作为兜底依然尝试使用 psutil
+            try:
+                import psutil
+                psutil.Process(pid).kill()
+                print(f"[+] 猎杀成功！恶意进程 {process_name} (PID: {pid}) 已被 psutil 清除。\n")
+            except Exception as backup_e:
+                print(f"[-] 猎杀发生未知错误: {e} | {backup_e}")
 
 # --- 模拟引擎测试 ---
 if __name__ == "__main__":
