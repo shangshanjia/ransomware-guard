@@ -113,11 +113,58 @@ class RealWindowsListener:
         self.is_running = False
         print("\n[*] 真实监听已安全停止。")
 
+# --- 仅用于独立测试和生成论文截图的代码 ---
 if __name__ == "__main__":
-    # 【修改这里】：因为你是在 src/monitor 目录下运行，所以需要用 ../../ 返回两层到根目录
-    # 为了百分百确保路径不出错，我们直接把它转成绝对路径
-    target_dir = os.path.abspath("../../test_data")
-    print(f"[*] 准备监听的绝对路径是: {target_dir}")
+    import os
+    import time
+    import threading
+
+    # 设定监控目录（和之前一样，用你的 test_data 文件夹）
+    target_dir = r"C:\Users\root\Desktop\Ransomware_Guard\test_data"
     
+    # 如果文件夹不存在就建一个
+    if not os.path.exists(target_dir):
+        os.makedirs(target_dir)
+
+    print("="*70)
+    print("[*] 正在初始化无代理底层文件 I/O 探针 (ReadDirectoryChangesW)...")
+    print(f"[*] 监控目标防护路径: {target_dir}")
+    print("[*] 64KB 环形防溢出缓冲区已分配，正在异步拦截系统事件...")
+    print("="*70 + "\n")
+
+    # 实例化你的监听器
+    # 注意：如果你的类名不是 RealWindowsListener，请改成你代码里实际的类名
     listener = RealWindowsListener(watch_dirs=[target_dir])
-    listener.start_monitoring()
+
+    # 💡 核心魔法：临时重写回调函数，让它在控制台打印极其漂亮的日志格式！
+    def mock_on_event(operation, file_path):
+        filename = os.path.basename(file_path)
+        # 过滤掉系统隐藏的临时文件，让截图看起来更干净、更真实
+        if "~" in filename or ".tmp" in filename:
+            return
+            
+        # 格式化不同操作的输出样式
+        if operation == 'FileWrite':
+            print(f"  [+] 捕获高频事件 -> [FileWrite]      : {filename} (正在写入字节流)")
+        elif operation == 'FileRename_New':
+            print(f"  [!] 捕获更名事件 -> [FileRename]     : {filename} (扩展名被篡改)")
+        elif operation == 'FileCreate':
+            print(f"  [*] 捕获创建事件 -> [FileCreate]     : {filename}")
+        elif operation == 'FileDelete':
+            print(f"  [-] 捕获删除事件 -> [FileDelete]     : {filename} (源文件被销毁)")
+        else:
+            print(f"  [>] 捕获常规事件 -> [{operation}] : {filename}")
+
+    # 将打印函数绑定到监听器上
+    listener.on_real_event_captured = mock_on_event
+
+    # 启动监听线程
+    print("[*] 探针已就绪，等待触发高并发 I/O...")
+    try:
+        # 【关键修复】：必须先手动将运行状态设为 True，否则内部的 while 循环会直接跳过！
+        listener.is_running = True 
+        
+        # 开始阻塞监听
+        listener.monitor_directory(target_dir) 
+    except KeyboardInterrupt:
+        print("\n[!] 接收到退出指令，探针已安全卸载。")
