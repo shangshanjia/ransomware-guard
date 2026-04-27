@@ -50,8 +50,9 @@ class ETWKernelListener:
                 )
                 
                 for action, file_name in results:
-                    # 关键优化：在 ETW 模式下，此处应直接获取原始事件包中的 PID
-                    # 暂时以模拟 PID 代替，解决主程序无法获取恶意源的问题
+                    # 修复：将目录路径和相对文件名拼接成完整的绝对路径
+                    full_path = os.path.join(path, file_name)
+                    
                     mock_pid = 8848 if "crypt" in file_name.lower() else 1024
                     self.dispatch_kernel_event(action, file_name, mock_pid)
                     
