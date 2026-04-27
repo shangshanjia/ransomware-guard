@@ -7,6 +7,7 @@ import threading
 import argparse
 import psutil
 import queue
+import wmi
 from datetime import datetime
 
 # 确保项目根目录在路径中
@@ -48,6 +49,8 @@ class IntegratedSystem(ETWKernelListener):
         threading.Thread(target=self._watch_config_change, daemon=True).start()
         # 启动消费者线程 (专门负责耗时的特征提取与查杀)
         threading.Thread(target=self._event_consumer_worker, daemon=True).start()
+        # 👇 新增：启动事前防线 (WMI 前置雷达) 守护线程
+        threading.Thread(target=self._pre_radar_worker, daemon=True).start()
 
     def is_noisy_file(self, file_path):
         """自适应降噪算法：确保 CPU < 5% 的关键 (对齐第四阶段)"""
@@ -163,6 +166,57 @@ class IntegratedSystem(ETWKernelListener):
                         print(f"[*] 监控策略已热重载，当前保护路径: {len(self.watch_dirs)} 个")
                 except: pass
             time.sleep(2)
+
+    def _pre_radar_worker(self):
+        """【事前防线】后台独立线程：基于 WMI 的进程创建与命令行监控"""
+        print("[*] 📡 事前防线 (WMI 前置雷达) 守护线程已启动...")
+        
+        high_risk_keywords = [
+            "vssadmin.exe delete shadows",  
+            "bcdedit /set {default} recoveryenabled no", 
+            "wbadmin delete catalog",       
+            "wevtutil cl security",         
+            "taskkill /f /im sqlservr.exe"
+        ]
+
+        try:
+            c = wmi.WMI()
+            # 订阅进程创建事件，每秒轮询
+            process_watcher = c.ExecNotificationQuery(
+                "SELECT * FROM __InstanceCreationEvent WITHIN 1 WHERE TargetInstance ISA 'Win32_Process'"
+            )
+
+            while True:
+                new_event = process_watcher.NextEvent()
+                process = new_event.TargetInstance
+                
+                pid = process.ProcessId
+                name = process.Name
+                cmdline = process.CommandLine
+
+                if not cmdline:
+                    continue
+
+                cmdline_lower = cmdline.lower()
+                is_malicious = any(keyword in cmdline_lower for keyword in high_risk_keywords)
+
+                if is_malicious:
+                    print(f"\n[🚨 事前防线触发] 发现勒索病毒高危前置指令: {cmdline}")
+                    try:
+                        p = psutil.Process(pid)
+                        p.kill()
+                        print(f"[🔥 斩首成功] 进程 {name} (PID:{pid}) 已被扼杀在摇篮中！")
+                        
+                        # 💡 核心联动：推送到前端可视化大屏！
+                        self.log_alert("事前防御 (WMI雷达)", pid, "执行高危破坏指令", cmdline)
+                        
+                    except psutil.NoSuchProcess:
+                        pass
+                    except psutil.AccessDenied:
+                        print(f"[!] 权限不足，请以管理员身份运行 main.py")
+                        
+        except Exception as e:
+            print(f"[-] WMI 前置雷达异常退出: {e}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Ransomware Guard CLI")
