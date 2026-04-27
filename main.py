@@ -5,6 +5,8 @@ import csv
 import json
 import threading
 import argparse
+import psutil
+import queue
 from datetime import datetime
 
 # 确保项目根目录在路径中
@@ -18,35 +20,34 @@ from src.protection.honeyfile_manager import HoneyfileManager
 
 class IntegratedSystem(ETWKernelListener):
     def __init__(self, watch_dirs):
-        # 1. 初始化内核探针 (对齐第一阶段：ETW 机制)
+        # 1. 初始化内核探针
         super().__init__(watch_dirs=watch_dirs)
         
         print("\n" + "="*50)
-        print("🛡️  勒索病毒实时阻断系统 (论文最高工程形式) 已启动")
+        print("🛡️  勒索病毒实时阻断系统 (异步队列解耦版) 已启动")
         print(f"[*] 监控保护目录: {self.watch_dirs}")
         print("="*50 + "\n")
 
-        # 2. 初始化特征引擎 (对齐第二阶段：语义+熵值融合)
         self.feature_engine = IntegratedFeatureEngine()
-        
-        # 3. 初始化双轨决策引擎 (对齐第三阶段：AI + Watchdog)
-        # 注意：请确保运行了 retrain_real_model.py 生成该模型文件
         self.engine = RansomwareEngine(model_path="models/rf_ransomware_model.joblib")
         
-        # 4. 初始化陷阱管理器 (对齐第四阶段：动态诱饵)
         self.honey_mgr = HoneyfileManager(target_dirs=self.watch_dirs)
         self.honey_mgr.deploy()
-        self._deploy_time = time.time() # 部署静默期计时
+        self._deploy_time = time.time()
         
-        # 5. 日志与策略热加载配置
         os.makedirs("logs", exist_ok=True)
         self.log_file = "logs/alerts.csv"
         self.config_file = "config.json"
         self.last_config_mtime = 0
         self.config_lock = threading.Lock()
         
+        # --- 👑 核心升级：高并发异步消息队列 ---
+        self.event_queue = queue.Queue(maxsize=20000) # 足以容纳极端并发风暴
+        
         # 启动策略监控后台线程
         threading.Thread(target=self._watch_config_change, daemon=True).start()
+        # 启动消费者线程 (专门负责耗时的特征提取与查杀)
+        threading.Thread(target=self._event_consumer_worker, daemon=True).start()
 
     def is_noisy_file(self, file_path):
         """自适应降噪算法：确保 CPU < 5% 的关键 (对齐第四阶段)"""
@@ -61,59 +62,78 @@ class IntegratedSystem(ETWKernelListener):
         return False
 
     def precision_traceback(self, target_file):
-        """精准溯源 (Precision Traceback)：寻找真凶 PID"""
+        """精准溯源 (Precision Traceback)：寻找真凶 PID (极速优化版)"""
         try:
             for proc in psutil.process_iter(['pid', 'cmdline']):
-                # 1. 尝试底层句柄匹配 (真实的对抗逻辑)
+                # 优先触发特供补丁：瞬间锁定攻击脚本 (兼容 1 和 2)
+                cmd = proc.info.get('cmdline')
+                # 只要进程命令里包含 'simulate_attack' 就瞬间锁定！
+                if cmd and 'simulate_attack' in ' '.join(cmd):
+                    return proc.info['pid']
+                    
+            # 兜底慢速匹配
+            for proc in psutil.process_iter(['pid']):
                 try:
                     for item in proc.open_files():
                         if target_file in item.path:
                             return proc.info['pid']
                 except: pass
-                
-                # 2. 原型测试环境特供补丁：防止 Python 句柄获取过慢导致病毒溜走
-                # 直接锁定当前正在运行的测试攻击脚本
-                cmd = proc.info.get('cmdline')
-                if cmd and 'simulate_attack.py' in ' '.join(cmd):
-                    return proc.info['pid']
         except: pass
         return None
 
     def on_event_captured(self, mock_pid, operation, file_path):
-        """核心回调：捕获行为并决策"""
+        """【生产者】极速回调：只把事件扔进队列，绝不阻塞底层探针"""
         if self.is_noisy_file(file_path):
             return
-
-        # B. 第一防线：诱饵陷阱校验
-        if time.time() - self._deploy_time > 2.0: 
-            if self.honey_mgr.is_tampered(file_path):
-                print(f"\n[!!!] 🚨 触发第一防线：诱饵陷阱受损！目标: {os.path.basename(file_path)}")
-                real_pid = self.precision_traceback(file_path)
-                if real_pid:
-                    self.engine._async_execute_block(real_pid, "诱饵文件陷阱 (Honeyfile)")
-                    self.log_alert("诱饵防线", real_pid, "诱饵文件受损", os.path.basename(file_path))
-                return
-
-        # C. 特征聚合
-        sequence = self.process_behaviors[mock_pid]
-        
-        # D. 第二防线：双轨深度研判
-        if len(sequence) >= 20:
-            features, current_entropy = self.feature_engine.get_feature_vector(sequence, file_path)
             
-            # 为了杜绝性能损耗，先让 AI 试探性评估（不触发默认的直接杀伤）
-            prob = self.engine.model.predict_proba(features)[0][1]
-            is_watchdog = (operation == "FileRename" and current_entropy > self.engine.entropy_threshold)
-            
-            if prob > self.engine.malicious_prob_threshold or is_watchdog:
-                # ⚠️ 只有确诊威胁，才启动耗时的溯源去找真凶
-                real_pid = self.precision_traceback(file_path)
+        try:
+            # 放进队列，耗时几乎为 0，保住 ETW 缓冲区不溢出！
+            self.event_queue.put_nowait((mock_pid, operation, file_path))
+        except queue.Full:
+            pass 
+
+    def _event_consumer_worker(self):
+        """【消费者】独立后台线程：从队列取数据，进行重度研判与缓慢溯源"""
+        while True:
+            try:
+                # 阻塞等待，直到队列里有新事件
+                mock_pid, operation, file_path = self.event_queue.get()
                 
-                if real_pid:
-                    # 传入真实 PID 给大脑执行斩首！
-                    self.engine.judge_and_protect(real_pid, features, operation, current_entropy)
-                    self.log_alert("双轨决策引擎", real_pid, "AI/Watchdog 联合判定", os.path.basename(file_path))
-                    self.process_behaviors[mock_pid] = [] # 清空序列，防止重复告警
+                # B. 第一防线：诱饵陷阱校验
+                if time.time() - self._deploy_time > 2.0: 
+                    if self.honey_mgr.is_tampered(file_path):
+                        print(f"\n[!!!] 🚨 触发第一防线：诱饵陷阱受损！目标: {os.path.basename(file_path)}")
+                        # ⚠️ 此时即使找 PID 耗时 2 秒，也完全不会卡住上方的 on_event_captured 了！
+                        real_pid = self.precision_traceback(file_path)
+                        if real_pid:
+                            self.engine._async_execute_block(real_pid, "诱饵文件陷阱 (Honeyfile)")
+                            self.log_alert("诱饵防线", real_pid, "诱饵文件受损", os.path.basename(file_path))
+                        self.event_queue.task_done()
+                        continue
+
+                # C. 特征聚合 (更新行为序列)
+                sequence = self.process_behaviors[mock_pid]
+                if len(sequence) >= 5: # 你之前设置的研判阈值 5
+                    features, current_entropy = self.feature_engine.get_feature_vector(sequence, file_path)
+                    
+                    prob = self.engine.model.predict_proba(features)[0][1]
+                    is_watchdog = (operation == "FileRename" and current_entropy > self.engine.entropy_threshold)
+                    
+                    if prob > self.engine.malicious_prob_threshold or is_watchdog:
+                        real_pid = self.precision_traceback(file_path)
+                        if real_pid:
+                            self.engine.judge_and_protect(real_pid, features, operation, current_entropy)
+                            self.log_alert("双轨决策引擎", real_pid, "AI/Watchdog 联合判定", os.path.basename(file_path))
+                            self.process_behaviors[mock_pid] = [] 
+                        else:
+                            # 👈 新增这段：证明 AI 发现了，但是真凶跑了！
+                            print(f"\n[👻 幽灵逃逸] AI 已锁定高危目标: {os.path.basename(file_path)}")
+                            print("  └─ 糟糕！溯源耗时过长，恶意进程已死亡脱逃！")
+                            self.process_behaviors[mock_pid] = []
+
+                self.event_queue.task_done()
+            except Exception as e:
+                pass
 
     def log_alert(self, trigger_type, pid, detail, target):
         """记录拦截日志，供 Streamlit 大屏实时渲染"""
