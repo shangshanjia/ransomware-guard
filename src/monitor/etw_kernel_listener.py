@@ -54,7 +54,7 @@ class ETWKernelListener:
                     full_path = os.path.join(path, file_name)
                     
                     mock_pid = 8848 if "crypt" in file_name.lower() else 1024
-                    self.dispatch_kernel_event(action, file_name, mock_pid)
+                    self.dispatch_kernel_event(action, full_name, mock_pid)
                     
             except Exception as e:
                 break
