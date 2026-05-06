@@ -59,23 +59,30 @@ class ETWKernelListener:
             except Exception as e:
                 break
 
-    def dispatch_kernel_event(self, action, file_name, pid):
+   def dispatch_kernel_event(self, action, file_path, pid):
         """
-        将内核事件分发至特征工程层 (对齐论文 3.2 节流程)
+        将内核事件分发至特征工程层，统一映射到训练特征
         """
         operation = "Unknown"
-        if action == 3: operation = "FileWrite"
-        elif action in [4, 5]: operation = "FileRename"
-        elif action == 2: operation = "FileDelete"
+
+        # Windows 文件通知类型映射到行为语义
+        if action == 3:
+            operation = "FileWrite"
+        elif action in [4,5]:
+            operation = "FileRename"
+        elif action == 2:
+            operation = "FileDelete"
+        elif action == 6:  # 这里6代表我们捕获到的属性修改事件
+            operation = "SetInfo"
 
         # 推入对应 PID 的行为序列窗口
         self.process_behaviors[pid].append(operation)
         if len(self.process_behaviors[pid]) > self.max_sequence_length:
             self.process_behaviors[pid].pop(0)
 
-        # 触发实时回调，直接传递 PID (不再需要 lazy_traceback)
-        self.on_event_captured(pid, operation, file_name)
-
+        # 调用回调，将标准化操作传递到 IntegratedFeatureEngine
+        self.on_event_captured(pid, operation, file_path)
+       
     def on_event_captured(self, pid, operation, file_name):
         # 此处由 IntegratedSystem 继承并实现具体阻断逻辑
         pass
