@@ -10,42 +10,44 @@ class IntegratedFeatureEngine:
             'FileWrite': 1,
             'FileRename': 2,
             'FileDelete': 3,
-            'SetInfo': 4
+            'SetInfo': 4  # 原始事件名
         }
-        self.window_size = 20 # 论文中提到的滑动窗口大小
+        self.window_size = 20 # 滑动窗口大小
 
     def calculate_shannon_entropy(self, file_path):
-        """对齐论文 3.4 节：计算待写入数据块的混乱度"""
+        """计算文件头部 4KB 的 Shannon 熵"""
         try:
-            if not os.path.exists(file_path): return 0.0
+            if not os.path.exists(file_path):
+                return 0.0
             with open(file_path, 'rb') as f:
-                # 仅读取头部 4KB，确保阻断延迟 < 35ms (对齐 5.2 节指标)
                 data = f.read(4096)
-            if not data: return 0.0
-            
+            if not data:
+                return 0.0
+
             counter = Counter(data)
             len_data = len(data)
-            # 应用 Shannon 公式
-            entropy = -sum((count/len_data) * math.log2(count/len_data) for count in counter.values())
+            entropy = -sum((count / len_data) * math.log2(count / len_data) for count in counter.values())
             return entropy
         except:
             return 0.0
 
     def get_feature_vector(self, api_sequence, last_file_path):
         """
-        核心：将时序操作频率与文件信息熵相结合 (对齐 1.2 节)
+        核心：将时序操作频率与文件信息熵相结合
+        输出特征向量列名与训练脚本一致
         """
         # 1. 统计频率特征
-        api_counts = [api_sequence.count(op) for op in ['FileWrite', 'FileRename', 'FileDelete', 'SetInfo']]
-        
+        write_count = api_sequence.count('FileWrite')
+        rename_count = api_sequence.count('FileRename')
+        delete_count = api_sequence.count('FileDelete')
+        setinfo_count = api_sequence.count('SetInfo')  # 统一列名
+
         # 2. 提取内容特征
         current_entropy = self.calculate_shannon_entropy(last_file_path)
-        
-        # 3. 构造融合特征向量: [频率1, 频率2, 频率3, 频率4, 信息熵, 风险标志]
-        # 风险标志：当熵值 > 7.5 时标记为高随机性数据 (密文)
         entropy_risk = 1 if current_entropy > 7.5 else 0
-        
-        combined_vector = api_counts + [current_entropy, entropy_risk]
-        
+
+        # 3. 构造融合特征向量: [write_count, rename_count, delete_count, setinfo_count, entropy, entropy_risk]
+        combined_vector = [write_count, rename_count, delete_count, setinfo_count, current_entropy, entropy_risk]
+
         # 转换为 AI 模型所需的矩阵格式
         return np.array([combined_vector]), current_entropy
