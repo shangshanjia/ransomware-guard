@@ -65,15 +65,20 @@ class IntegratedSystem(ETWKernelListener):
         return False
 
     def precision_traceback(self, target_file):
-        """精准溯源 (Precision Traceback)：寻找真凶 PID (极速优化版)"""
+        """精准溯源 (Precision Traceback)：寻找真凶 PID"""
         try:
+            attack_keywords = [
+                "simulate_attack",
+                "simulate_ransomware_behavior",
+                "simulate_attack2",
+                "simulate_attack_honey"
+            ]
+
             for proc in psutil.process_iter(['pid', 'cmdline']):
-                # 优先触发特供补丁：瞬间锁定攻击脚本 (兼容 1 和 2)
                 cmd = proc.info.get('cmdline')
-                # 只要进程命令里包含 'simulate_attack' 就瞬间锁定！
-                if cmd and 'simulate_attack' in ' '.join(cmd):
+                if cmd and any(kw in ' '.join(cmd) for kw in attack_keywords):
                     return proc.info['pid']
-                    
+
             # 兜底慢速匹配
             for proc in psutil.process_iter(['pid']):
                 try:
