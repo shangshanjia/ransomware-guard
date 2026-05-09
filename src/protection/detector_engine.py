@@ -59,18 +59,24 @@ class RansomwareEngine:
     def judge_and_protect(self, pid, features, current_op, current_entropy):
         """
         双轨判定：
-        1. AI 随机森林模型
+        1. 随机森林模型
         2. Watchdog 规则兜底
         """
         prob = self.predict_malicious_probability(features)
 
+        write_count = features[0][0]
+        rename_count = features[0][1]
+
         is_watchdog_triggered = (
-            current_op == "FileRename"
-            and current_entropy > self.entropy_threshold
+            current_entropy > self.entropy_threshold
+            and (
+                rename_count > 0
+                or write_count >= 10
+            )
         )
 
         if prob > self.malicious_prob_threshold or is_watchdog_triggered:
-            reason = "Watchdog兜底" if is_watchdog_triggered else f"AI置信度 {prob:.2f}"
+            reason = "Watchdog兜底" if is_watchdog_triggered else f"检测置信度 {prob:.2f}"
 
             self.kill_executor.submit(
                 self._async_execute_block,
